@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: cloudformation template to deploy a lambda function Vampster
+Parameters: 
+  Environment:
+    Type: String
+    Default: staging
+    Description: Environment Name 
+  S3BucketName:
+    Type: String
+    Default: harsh-tasks-bucket022021
+    Description: Name of the S3 bucket
+Resources: 
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref S3BucketName
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: GlacierRule
+            Prefix: glacier
+            Status: Enabled
+            ExpirationInDays: 365
+            Transitions:
+              - TransitionInDays: 1
+                StorageClass: GLACIER
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${Environment}-MyLambda-Execution-Role'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      - 'arn:aws:iam::aws:policy/AmazonSQSFullAccess'
+      - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+  MyLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          s3 = boto3.client('s3')
+
+          s3_bucket_name = os.environ['s3_bucket_name']
+          print(s3_bucket_name)
+
+          def lambda_handler(event, context):
+              #Get Message from SQS Event
+              
+              body = event['Records'][0]['body']
+              message_load = json.loads(body)
+              type = message_load['Type']
+              message_id = message_load['MessageId']
+              subject = message_load['Subject']
+              message = message_load['Message']
+              
+              #Put Message body to S3 Bucket
+              
+              put = s3.put_object(Body=json.dumps(message_load), Bucket=f"{s3_bucket_name}", Key='glacier/body.json')
+      Description:  Put-Message-body-to-s3
+      FunctionName: !Sub '${Environment}-My-Function01'
+      Handler: index.lambda_handler
+      Role: !GetAtt
+      - LambdaExecutionRole
+      - Arn
+      Runtime: python3.9
+      Timeout: '3'
+      Environment:
+        Variables:
+          s3_bucket_name: !Ref S3BucketName
+  MyLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref MyLambdaFunction
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt
+        - SQSQueue
+        - Arn
+  MyLambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${MyLambdaFunction}"
+      RetentionInDays: '7'
+  SNSTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      DisplayName: !Sub '${Environment}-My-Topic01'
+      TopicName: !Sub '${Environment}-My-Topic01'
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt SQSQueue.Arn
+      TopicArn: !Ref SNSTopic
+  SQSToLambda:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !GetAtt 
+        - SQSQueue
+        - Arn
+      BatchSize: 10
+      FunctionName: !Ref MyLambdaFunction
+  SQSQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${Environment}-My-SQS01'
+  AllowLambds2SQSPolicy:
+    Type: 'AWS::SQS::QueuePolicy'
+    Properties:
+      PolicyDocument:
+        Id: QueuePolicy
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 'sqs:*'
+            Resource:
+              - !GetAtt 
+                - SQSQueue
+                - Arn
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - 'sqs:SendMessage'
+            Resource:
+              - !GetAtt 
+                - SQSQueue
+                - Arn
+          - Effect: Allow
+            Principal:
+              AWS: 
+              - '*'
+            Action:
+              - 'sqs:SendMessage'
+            Resource:
+              - !GetAtt 
+                - SQSQueue
+                - Arn
+            Condition:
+              ArnEquals:
+                'aws:SourceArn': !Ref SNSTopic
+      Queues:
+        - !Ref SQSQueue
+Outputs:
+  BucketName:
+    Value: !Ref S3Bucket
