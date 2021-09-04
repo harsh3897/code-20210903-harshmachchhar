@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: cloudformation template to deploy a lambda function Vampster
+Description: cloudformation template to deploy a lambda function integrated with SQS and SNS Vampster 
 Parameters: 
   Environment:
     Type: String
